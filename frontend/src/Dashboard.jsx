@@ -5,12 +5,20 @@ import {
   Users, Target, BarChart3
 } from 'lucide-react';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, Legend
+  AreaChart, 
+  Area, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  Cell
 } from 'recharts';
 
 // Backend API endpoint
-const API_BASE = 'http://localhost:8000/api';
+const API_BASE = `http://${window.location.hostname}:8000/api`;
 
 const DEFAULT_INPUT = {
   credit_score: 700,
@@ -44,31 +52,71 @@ const Dashboard = () => {
     employment_status: 'employed',
     loan_term: 36
   });
+
+  const [stockFormData, setStockFormData] = useState({ ticker: 'AAPL' });
+  const [stockRecords, setStockRecords] = useState([]);
+  const [lastStockResult, setLastStockResult] = useState(null);
+  const [stockTamperingRecord, setStockTamperingRecord] = useState(null);
+  const [stockTamperForm, setStockTamperForm] = useState({
+    decision: '',
+    confidence: 0,
+    current_price: 0,
+    ma_50: 0,
+    rsi_14: 0
+  });
+
   const [verifyResult, setVerifyResult] = useState(null);
   const [verifying, setVerifying] = useState(null);
+  const [replayResult, setReplayResult] = useState(null);
+  const [replaying, setReplaying] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [lastResult, setLastResult] = useState(null);
+  const [stockHistory, setStockHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 3000); 
+    const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
   }, []);
 
   const fetchData = async () => {
     try {
-      const [auditRes, statusRes, statsRes] = await Promise.all([
+      const [auditRes, stockRes, statusRes, statsRes] = await Promise.all([
         fetch(`${API_BASE}/audits`),
+        fetch(`${API_BASE}/stock/audits`),
         fetch(`${API_BASE}/system/status`),
         fetch(`${API_BASE}/stats`),
       ]);
       if (auditRes.ok) setRecords(await auditRes.json());
+      if (stockRes.ok) setStockRecords(await stockRes.json());
       if (statusRes.ok) setSystemStatus((await statusRes.json()).status);
       if (statsRes.ok) setStats(await statsRes.json());
     } catch (err) {
       console.error('Fetch error:', err);
     }
   };
+
+  const fetchStockHistory = async (ticker) => {
+    setLoadingHistory(true);
+    try {
+      const res = await fetch(`${API_BASE}/stock/history/${ticker}`);
+      if (res.ok) {
+        const data = await res.json();
+        setStockHistory(data);
+      }
+    } catch (err) {
+      console.error('History fetch error:', err);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'overview' && stockFormData.ticker) {
+      fetchStockHistory(stockFormData.ticker);
+    }
+  }, [activeTab, stockFormData.ticker]);
 
   const verifyRecord = async (decisionId) => {
     setVerifying(decisionId);
@@ -82,6 +130,52 @@ const Dashboard = () => {
       console.error('Verify error:', err);
     } finally {
       setVerifying(null);
+    }
+  };
+
+  const replayDecision = async (decisionId) => {
+    setReplaying(decisionId);
+    setReplayResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/replay/${decisionId}`, { method: 'POST' });
+      const data = await res.json();
+      setReplayResult({ id: decisionId, ...data });
+      // Keep it open until manually dismissed, or auto dismiss after 10s
+    } catch (err) {
+      console.error('Replay error:', err);
+      setReplayResult({ error: true, message: "Failed to connect to backend for replay." });
+    } finally {
+      setReplaying(null);
+    }
+  };
+
+  const verifyStockRecord = async (decisionId) => {
+    setVerifying(decisionId);
+    setVerifyResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/stock/verify/${decisionId}`, { method: 'POST' });
+      const data = await res.json();
+      setVerifyResult({ id: decisionId, ...data });
+      setTimeout(() => setVerifyResult(null), 8000);
+    } catch (err) {
+      console.error('Verify error:', err);
+    } finally {
+      setVerifying(null);
+    }
+  };
+
+  const replayStockDecision = async (decisionId) => {
+    setReplaying(decisionId);
+    setReplayResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/stock/replay/${decisionId}`, { method: 'POST' });
+      const data = await res.json();
+      setReplayResult({ id: decisionId, ...data });
+    } catch (err) {
+      console.error('Replay error:', err);
+      setReplayResult({ error: true, message: "Failed to connect to backend for replay." });
+    } finally {
+      setReplaying(null);
     }
   };
 
@@ -110,6 +204,29 @@ const Dashboard = () => {
         await fetchData();
         // Commented out automatic tab switch as requested
         // setActiveTab('audit');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const runStockDecision = async () => {
+    setSubmitting(true);
+    setLastStockResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/stock/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(stockFormData),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Error: ${data.detail}`);
+      } else {
+        setLastStockResult(data);
+        await fetchData();
       }
     } catch (err) {
       console.error(err);
@@ -151,24 +268,69 @@ const Dashboard = () => {
     }
   };
 
+  const openStockTamperModal = (record) => {
+    setStockTamperingRecord(record);
+    setStockTamperForm({
+      decision: record.decision === 'BUY' ? 'SELL' : 'BUY',
+      confidence: parseFloat((1.0 - record.confidence).toFixed(2)),
+      current_price: record.current_price || 0,
+      ma_50: record.ma_50 || 0,
+      rsi_14: record.rsi_14 || 0
+    });
+  };
+
+  const handleStockTamper = async () => {
+    if (!stockTamperingRecord) return;
+    try {
+      const res = await fetch(`${API_BASE}/stock/tamper/${stockTamperingRecord.decision_id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(stockTamperForm),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.detail || 'Tamper failed');
+        return;
+      }
+      await fetchData();
+      setStockTamperingRecord(null);
+    } catch (err) {
+      console.error('Tamper error:', err);
+    }
+  };
+
   const tabs = [
     { id: 'overview', label: 'Analytics', icon: <TrendingUp className="w-4 h-4" /> },
-    { id: 'engine', label: 'Decision Engine', icon: <Activity className="w-4 h-4" /> },
-    { id: 'audit', label: 'Audit Log', icon: <Blocks className="w-4 h-4" /> }
+    { id: 'engine', label: 'Loan Engine', icon: <Activity className="w-4 h-4" /> },
+    { id: 'stock_engine', label: 'Stock AI Engine', icon: <BarChart3 className="w-4 h-4" /> },
+    { id: 'audit', label: 'Audit Log', icon: <Blocks className="w-4 h-4" /> },
+    { id: 'stock_audit', label: 'Stock Audit Log', icon: <Database className="w-4 h-4" /> }
   ];
 
   const downloadCSV = () => {
-    if (records.length === 0) return;
-    const headers = ["Decision ID", "Timestamp", "Model Version", "Credit Score", "Income", "Loan Amount", "Debt", "Employment", "Term", "Decision", "Confidence", "Status", "Input Hash", "Execution Hash", "Blockchain TX"];
-    const csvRows = [
-      headers.join(","),
-      ...records.map(rec => [
-        `"${rec.decision_id}"`, `"${new Date(rec.timestamp).toLocaleString()}"`, `"${rec.model_version}"`, `"${rec.credit_score}"`, `"${rec.income}"`, `"${rec.loan_amount}"`, `"${rec.existing_debt}"`, `"${rec.employment_status}"`, `"${rec.loan_term}"`, `"${rec.decision}"`, `"${(rec.confidence * 100).toFixed(2)}%"`, `"${rec.status}"`, `"${rec.input_hash}"`, `"${rec.execution_hash}"`, `"${rec.blockchain_tx_id}"`
-      ].join(","))
-    ];
-    const blob = new Blob([csvRows.join("\n")], { type: 'text/csv' });
+    let headers, rows, filename;
+
+    if (activeTab === 'stock_audit' || (activeTab !== 'audit' && stockRecords.length > 0 && records.length === 0)) {
+        // Stock CSV
+        headers = ["Decision ID", "Timestamp", "Ticker", "Price", "MA50", "RSI14", "Decision", "Confidence", "Status", "Execution Hash"];
+        rows = stockRecords.map(rec => [
+            `"${rec.decision_id}"`, `"${new Date(rec.timestamp).toLocaleString()}"`, `"${rec.ticker}"`, `"${rec.current_price}"`, `"${rec.ma_50}"`, `"${rec.rsi_14}"`, `"${rec.decision}"`, `"${(rec.confidence * 100).toFixed(2)}%"`, `"${rec.status}"`, `"${rec.execution_hash}"`
+        ]);
+        filename = `Stock_AI_Audit_${new Date().toISOString().split('T')[0]}.csv`;
+    } else {
+        // Loan CSV
+        if (records.length === 0) return;
+        headers = ["Decision ID", "Timestamp", "Model", "Score", "Income", "Amount", "Debt", "Employment", "Term", "Decision", "Confidence", "Status", "Execution Hash"];
+        rows = records.map(rec => [
+            `"${rec.decision_id}"`, `"${new Date(rec.timestamp).toLocaleString()}"`, `"${rec.model_version}"`, `"${rec.credit_score}"`, `"${rec.income}"`, `"${rec.loan_amount}"`, `"${rec.existing_debt}"`, `"${rec.employment_status}"`, `"${rec.loan_term}"`, `"${rec.decision}"`, `"${(rec.confidence * 100).toFixed(2)}%"`, `"${rec.status}"`, `"${rec.execution_hash}"`
+        ]);
+        filename = `Loan_AI_Audit_${new Date().toISOString().split('T')[0]}.csv`;
+    }
+
+    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.style.display = 'none'; a.href = url; a.download = `AI_Audit_${new Date().toISOString().split('T')[0]}.csv`;
+    const a = document.createElement('a'); a.style.display = 'none'; a.href = url; a.download = filename;
     document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url);
   };
 
@@ -199,16 +361,16 @@ const Dashboard = () => {
           </div>
           <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Immutable Accountability Protocol v2.4</p>
         </div>
-        
+
         <div className="flex items-center gap-4">
-          <button 
+          <button
             onClick={downloadCSV}
             className="group bg-white hover:bg-slate-900 hover:text-white text-slate-700 font-black py-4 px-8 rounded-3xl border border-slate-200 shadow-xl shadow-slate-200/50 transition-all duration-300 flex items-center gap-3 text-xs uppercase tracking-widest"
           >
             <Database className="w-4 h-4 group-hover:scale-110 transition-transform" />
             Export Audit Trial
           </button>
-          
+
           <div className={`px-8 py-4 rounded-3xl font-black flex items-center gap-3 shadow-xl border transition-all ${
               systemStatus === 'SAFE' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-rose-50 text-rose-700 border-rose-100 animate-pulse'
             }`}>
@@ -251,8 +413,8 @@ const Dashboard = () => {
                key={tab.id}
                onClick={() => setActiveTab(tab.id)}
                className={`px-10 py-4 rounded-[24px] font-black text-[10px] uppercase tracking-[0.2em] transition-all duration-500 flex items-center gap-3 ${
-                 activeTab === tab.id 
-                   ? 'bg-white text-indigo-600 shadow-2xl shadow-indigo-100 scale-105' 
+                 activeTab === tab.id
+                   ? 'bg-white text-indigo-600 shadow-2xl shadow-indigo-100 scale-105'
                    : 'text-slate-500 hover:text-slate-800'
                }`}
              >
@@ -264,8 +426,65 @@ const Dashboard = () => {
 
         {/* --- Overview Tab --- */}
         {activeTab === 'overview' && (
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
-            <div className="xl:col-span-4 space-y-6">
+          <div className="space-y-12 animate-in fade-in slide-in-from-bottom-8 duration-700">
+            {/* Stock Performance Chart Section */}
+            <div className="bg-white p-12 rounded-[56px] shadow-2xl shadow-indigo-100 border border-indigo-50">
+               <div className="flex justify-between items-center mb-10">
+                  <div>
+                    <h3 className="text-2xl font-black text-slate-900 tracking-tight">Market Intelligence Terminal</h3>
+                    <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mt-1">Live Asset Performance & AI Baseline</p>
+                  </div>
+                  <select
+                    className="bg-slate-50 border-none text-xs font-black p-4 rounded-2xl outline-none"
+                    value={stockFormData.ticker}
+                    onChange={(e) => setStockFormData({...stockFormData, ticker: e.target.value})}
+                  >
+                    <option value="AAPL">Apple (AAPL)</option>
+                    <option value="TSLA">Tesla (TSLA)</option>
+                    <option value="MSFT">Microsoft (MSFT)</option>
+                    <option value="GOOGL">Alphabet (GOOGL)</option>
+                    <option value="AMZN">Amazon (AMZN)</option>
+                  </select>
+               </div>
+
+               <div className="h-[400px] w-full mt-8">
+                  {loadingHistory ? (
+                    <div className="h-full flex items-center justify-center text-slate-300 font-black italic animate-pulse">Synchronizing Market Data...</div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={stockHistory}>
+                        <defs>
+                          <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.1}/>
+                            <stop offset="95%" stopColor="#4f46e5" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <XAxis dataKey="date" hide />
+                        <YAxis hide domain={['auto', 'auto']} />
+                        <Tooltip 
+                          contentStyle={{borderRadius: '24px', border: 'none', boxShadow: '0 20px 50px rgba(0,0,0,0.1)', padding: '20px'}}
+                          itemStyle={{fontSize: '12px', fontWeight: '900', textTransform: 'uppercase'}}
+                        />
+                        <Area type="monotone" dataKey="price" stroke="#4f46e5" strokeWidth={4} fillOpacity={1} fill="url(#colorPrice)" />
+                        <Area type="monotone" dataKey="ma50" stroke="#f59e0b" strokeWidth={2} strokeDasharray="5 5" fill="none" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  )}
+               </div>
+
+               <div className="flex gap-8 mt-10 p-6 bg-slate-50/50 rounded-3xl border border-slate-100/50">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full bg-indigo-600"></div>
+                    <span className="text-[10px] font-black text-slate-500 uppercase">Current Price</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+                    <span className="text-[10px] font-black text-slate-500 uppercase">50-Day Moving Average</span>
+                  </div>
+               </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
                {[
                  { label: 'Total Executions', val: stats.total_applicants, icon: <Users/>, col: 'indigo' },
                  { label: 'Integrity Score', val: '99.9%', icon: <ShieldCheck/>, col: 'emerald' },
@@ -281,25 +500,24 @@ const Dashboard = () => {
                    </div>
                  </div>
                ))}
-            </div>
-            
-            <div className="xl:col-span-8 bg-white p-10 rounded-[48px] shadow-2xl shadow-slate-200/40 border border-slate-100">
-               <div className="flex justify-between items-start mb-12">
-                  <div className="flex items-center gap-3">
-                     <BarChart3 className="w-6 h-6 text-indigo-600" />
-                     <h2 className="font-black text-sm uppercase tracking-[0.2em] text-slate-800">Decision Landscape</h2>
+               <div className="md:col-span-3 bg-white p-10 rounded-[48px] shadow-2xl shadow-slate-200/40 border border-slate-100">
+                  <div className="flex justify-between items-start mb-12">
+                     <div className="flex items-center gap-3">
+                        <BarChart3 className="w-6 h-6 text-indigo-600" />
+                        <h2 className="font-black text-sm uppercase tracking-[0.2em] text-slate-800">Decision Landscape</h2>
+                     </div>
                   </div>
-               </div>
-               <div className="h-80 w-full">
-                 <ResponsiveContainer width="100%" height="100%">
-                   <BarChart data={stats.credit_score_distribution}>
-                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                     <XAxis dataKey="range" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} />
-                     <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} unit="%" />
-                     <Tooltip contentStyle={{borderRadius: '24px', border: 'none', boxShadow: '0 25px 50px -12px rgb(0 0 0 / 0.15)'}} cursor={{fill: '#f8fafc'}} />
-                     <Bar dataKey="approval_rate" fill="#6366f1" radius={[12, 12, 0, 0]} barSize={50} />
-                   </BarChart>
-                 </ResponsiveContainer>
+                  <div className="h-80 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={stats.credit_score_distribution}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis dataKey="range" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} />
+                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} unit="%" />
+                        <Tooltip contentStyle={{borderRadius: '24px', border: 'none', boxShadow: '0 25px 50px -12px rgb(0 0 0 / 0.15)'}} cursor={{fill: '#f8fafc'}} />
+                        <Bar dataKey="approval_rate" fill="#6366f1" radius={[12, 12, 0, 0]} barSize={50} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
                </div>
             </div>
           </div>
@@ -384,6 +602,100 @@ const Dashboard = () => {
           </div>
         )}
 
+        {/* --- Stock Engine Tab --- */}
+        {activeTab === 'stock_engine' && (
+          <div className="max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-8 duration-700">
+            <div className="bg-white p-16 rounded-[64px] shadow-2xl shadow-indigo-100 border border-indigo-50 relative overflow-hidden">
+               <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-50 rounded-full blur-[120px] -mr-48 -mt-48 opacity-40"></div>
+               <div className="relative">
+                  <div className="flex items-center gap-5 mb-12">
+                    <div className="bg-indigo-600 p-4 rounded-3xl shadow-xl shadow-indigo-200 text-white"><BarChart3 className="w-8 h-8"/></div>
+                    <div>
+                      <h2 className="text-3xl font-black text-slate-900 tracking-tight">Stock AI Engine</h2>
+                      <p className="text-slate-400 text-xs font-bold uppercase tracking-[0.2em] mt-1">Real-time Trading Intelligence</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+                    <div>
+                      <label className={labelClass}>Select Stock Ticker</label>
+                      <select 
+                        className={fieldClass} 
+                        value={stockFormData.ticker} 
+                        onChange={(e) => setStockFormData({...stockFormData, ticker: e.target.value})}
+                      >
+                        <option value="AAPL">AAPL (Apple Inc.)</option>
+                        <option value="TSLA">TSLA (Tesla Inc.)</option>
+                        <option value="MSFT">MSFT (Microsoft Corp.)</option>
+                        <option value="GOOGL">GOOGL (Alphabet Inc.)</option>
+                        <option value="AMZN">AMZN (Amazon.com Inc.)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={runStockDecision} 
+                    disabled={submitting} 
+                    className="w-full mt-16 bg-slate-900 hover:bg-indigo-600 text-white font-black py-7 rounded-[32px] transition-all duration-500 shadow-2xl shadow-indigo-100 flex items-center justify-center gap-4 uppercase tracking-[0.3em] text-sm group"
+                  >
+                    {submitting ? 'Fetching & Executing Protocol...' : 'Generate Verified Decision'}
+                    <Database className="w-6 h-6 group-hover:rotate-12 transition-transform" />
+                  </button>
+               </div>
+
+               {/* Result Card Integration */}
+               {lastStockResult && (
+                 <div className={`mt-12 p-10 rounded-[48px] border-2 animate-in zoom-in-95 slide-in-from-bottom-5 duration-700 ${
+                   lastStockResult.decision === 'BUY' ? 'bg-emerald-50/50 border-emerald-100' : (lastStockResult.decision === 'SELL' ? 'bg-rose-50/50 border-rose-100' : 'bg-slate-50/50 border-slate-100')
+                 }`}>
+                   <div className="flex justify-between items-start mb-8">
+                     <div>
+                        <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-2">AI Protocol Verdict ({lastStockResult.ticker})</p>
+                        <h3 className={`text-4xl font-black tracking-tighter ${lastStockResult.decision === 'BUY' ? 'text-emerald-700' : (lastStockResult.decision === 'SELL' ? 'text-rose-700' : 'text-slate-700')}`}>
+                          {lastStockResult.decision}
+                        </h3>
+                     </div>
+                     <div className="bg-white px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-[0.1em] border border-slate-100 shadow-sm">
+                        Status: <span className={lastStockResult.status === 'Verified' ? 'text-emerald-600' : 'text-amber-600'}>{lastStockResult.status}</span>
+                     </div>
+                   </div>
+                   
+                   <div className="grid grid-cols-3 gap-6 mb-8 mt-4 border-y border-slate-200/50 py-6">
+                     <div>
+                       <p className="text-[10px] font-black uppercase text-slate-400 mb-1">Current Price</p>
+                       <p className="text-xl font-black text-slate-800">${lastStockResult.current_price.toFixed(2)}</p>
+                     </div>
+                     <div>
+                       <p className="text-[10px] font-black uppercase text-slate-400 mb-1">50-Day MA</p>
+                       <p className="text-xl font-black text-slate-800">${lastStockResult.ma_50.toFixed(2)}</p>
+                     </div>
+                     <div>
+                       <p className="text-[10px] font-black uppercase text-slate-400 mb-1">14-Day RSI</p>
+                       <p className="text-xl font-black text-slate-800">{lastStockResult.rsi_14.toFixed(2)}</p>
+                     </div>
+                   </div>
+
+                   <div className="space-y-4">
+                     <div className="flex justify-between items-end">
+                       <div>
+                          <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-1">Confidence Score</p>
+                          <p className="text-xl font-black text-slate-800">{(lastStockResult.confidence * 100).toFixed(1)}% Trust Accuracy</p>
+                       </div>
+                       <button onClick={() => setActiveTab('stock_audit')} className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:underline">View in Audit Ledger →</button>
+                     </div>
+                     <div className="h-4 bg-slate-200/50 rounded-full overflow-hidden p-1 border border-white">
+                        <div 
+                          className={`h-full rounded-full transition-all duration-[1500ms] ${lastStockResult.decision === 'BUY' ? 'bg-emerald-500 shadow-lg shadow-emerald-200' : (lastStockResult.decision === 'SELL' ? 'bg-rose-500 shadow-lg shadow-rose-200' : 'bg-slate-500 shadow-slate-200')}`} 
+                          style={{ width: `${(lastStockResult.confidence * 100).toFixed(0)}%` }}
+                        ></div>
+                     </div>
+                   </div>
+                 </div>
+               )}
+            </div>
+          </div>
+        )}
+
         {/* --- Audit Tab --- */}
         {activeTab === 'audit' && (
           <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
@@ -428,11 +740,82 @@ const Dashboard = () => {
                         </td>
                         <td className="px-8 py-8">{getStatusBadge(rec.status)}</td>
                         <td className="px-12 py-8 text-right space-x-3">
+                            <button onClick={() => replayDecision(rec.decision_id)} disabled={replaying === rec.decision_id} 
+                                    className="bg-white border border-slate-200 hover:border-blue-600 text-blue-600 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm hover:shadow-blue-100 italic">
+                              {replaying === rec.decision_id ? 'Replaying...' : 'Replay AI'}
+                            </button>
                             <button onClick={() => verifyRecord(rec.decision_id)} disabled={verifying === rec.decision_id} 
                                     className="bg-white border border-slate-200 hover:border-indigo-600 text-indigo-600 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm hover:shadow-indigo-100 italic">
                               {verifying === rec.decision_id ? 'Verifying...' : 'Validate Ledger'}
                             </button>
                             <button onClick={() => openTamperModal(rec)} className="bg-slate-50 hover:bg-rose-50 text-slate-300 hover:text-rose-600 p-3 rounded-2xl transition-all"><Bug className="w-5 h-5" /></button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* --- Stock Audit Tab --- */}
+        {activeTab === 'stock_audit' && (
+          <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
+            <div className="bg-white rounded-[56px] shadow-2xl shadow-slate-200/40 border border-slate-100 overflow-hidden">
+              <div className="p-12 border-b border-slate-50 flex justify-between items-end bg-slate-50/30">
+                  <div>
+                    <h2 className="text-3xl font-black text-slate-900 tracking-tight">Stock AI Audit Ledger</h2>
+                    <p className="text-slate-400 text-xs font-bold uppercase tracking-[0.2em] mt-1">Immutable Execution Evidence</p>
+                  </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50/50">
+                      <th className="px-12 py-8 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Execution Identity</th>
+                      <th className="px-8 py-8 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Stock</th>
+                      <th className="px-8 py-8 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">AI Verdict</th>
+                      <th className="px-8 py-8 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Integrity Hash</th>
+                      <th className="px-8 py-8 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
+                      <th className="px-12 py-8 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Transparency Control</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {stockRecords.map((rec) => (
+                      <tr key={rec.decision_id} className="hover:bg-slate-50/50 transition-colors group">
+                        <td className="px-12 py-8">
+                           <div className="flex flex-col gap-1">
+                             <span className="font-mono text-xs font-black text-indigo-600">{rec.decision_id}</span>
+                             <span className="text-[10px] text-slate-400 font-bold uppercase">{new Date(rec.timestamp).toLocaleDateString()}</span>
+                           </div>
+                        </td>
+                        <td className="px-8 py-8">
+                           <span className="text-sm font-black text-slate-800">{rec.ticker}</span>
+                        </td>
+                        <td className="px-8 py-8">
+                           <span className={`text-sm font-black ${rec.decision === 'BUY' ? 'text-emerald-600' : (rec.decision === 'SELL' ? 'text-rose-600' : 'text-slate-600')}`}>{rec.decision}</span>
+                        </td>
+                        <td className="px-8 py-8">
+                           <div className="flex items-center gap-3">
+                              <div className="w-20 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                 <div className="h-full bg-indigo-500" style={{width: `${rec.confidence * 100}%`}}></div>
+                              </div>
+                              <span className="font-mono text-[9px] text-slate-400 uppercase">{rec.execution_hash.substring(0,8)}...</span>
+                           </div>
+                        </td>
+                        <td className="px-8 py-8">{getStatusBadge(rec.status)}</td>
+                        <td className="px-12 py-8 text-right space-x-3">
+                            <button onClick={() => replayStockDecision(rec.decision_id)} disabled={replaying === rec.decision_id} 
+                                    className="bg-white border border-slate-200 hover:border-blue-600 text-blue-600 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm hover:shadow-blue-100 italic">
+                              {replaying === rec.decision_id ? 'Replaying...' : 'Replay AI'}
+                            </button>
+                            <button onClick={() => verifyStockRecord(rec.decision_id)} disabled={verifying === rec.decision_id} 
+                                    className="bg-white border border-slate-200 hover:border-indigo-600 text-indigo-600 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm hover:shadow-indigo-100 italic">
+                              {verifying === rec.decision_id ? 'Verifying...' : 'Validate Ledger'}
+                            </button>
+                            <button onClick={() => openStockTamperModal(rec)} className="bg-slate-50 hover:bg-rose-50 text-slate-300 hover:text-rose-600 p-3 rounded-2xl transition-all"><Bug className="w-5 h-5" /></button>
                         </td>
                       </tr>
                     ))}
@@ -463,6 +846,24 @@ const Dashboard = () => {
         </div>
       )}
 
+      {stockTamperingRecord && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[500] flex items-center justify-center p-6 animate-in fade-in duration-300">
+          <div className="bg-white rounded-[56px] shadow-2xl w-full max-w-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="bg-rose-600 p-10 text-white flex justify-between items-center">
+              <div className="flex items-center gap-4"><Bug className="w-8 h-8" /><h3 className="text-2xl font-black uppercase tracking-tight">System Breach Simulation (Stock)</h3></div>
+              <button onClick={() => setStockTamperingRecord(null)} className="hover:bg-white/20 p-2 rounded-full"><X className="w-8 h-8" /></button>
+            </div>
+            <div className="p-12 space-y-10">
+              <div className="grid grid-cols-2 gap-8">
+                <div className="col-span-2"><label className={labelClass}>Decision</label><select value={stockTamperForm.decision} onChange={e=>setStockTamperForm({...stockTamperForm, decision:e.target.value})} className={fieldClass}><option value="BUY">BUY</option><option value="SELL">SELL</option><option value="HOLD">HOLD</option></select></div>
+                {['confidence', 'current_price', 'ma_50', 'rsi_14'].map(f=>(<div key={f}><label className={labelClass}>{f}</label><input type="number" step="0.01" value={stockTamperForm[f]} onChange={e=>setStockTamperForm({...stockTamperForm, [f]:parseFloat(e.target.value)})} className={fieldClass}/></div>))}
+              </div>
+              <button onClick={handleStockTamper} className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black py-6 rounded-[32px] shadow-2xl shadow-rose-200 uppercase tracking-widest">Execute Manual Tamper</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {verifyResult && (
         <div className={`fixed bottom-10 right-10 p-10 rounded-[48px] shadow-2xl border-2 z-[600] animate-in slide-in-from-right-10 duration-700 ${verifyResult.result ? 'bg-white border-emerald-500' : 'bg-white border-rose-500'}`}>
            <div className="flex gap-6">
@@ -473,6 +874,71 @@ const Dashboard = () => {
                 <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 font-mono text-[9px] text-slate-400 break-all">{verifyResult.recomputed_hash}</div>
               </div>
            </div>
+        </div>
+      )}
+
+      {replayResult && !replayResult.error && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[600] flex items-center justify-center p-6 animate-in fade-in duration-300">
+          <div className="bg-white rounded-[56px] shadow-2xl w-full max-w-4xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className={`p-10 text-white flex justify-between items-center ${replayResult.match ? 'bg-emerald-600' : 'bg-amber-500'}`}>
+              <div className="flex items-center gap-4">
+                {replayResult.match ? <ShieldCheck className="w-8 h-8" /> : <AlertTriangle className="w-8 h-8" />}
+                <h3 className="text-2xl font-black uppercase tracking-tight">AI Decision Replay</h3>
+              </div>
+              <button onClick={() => setReplayResult(null)} className="hover:bg-white/20 p-2 rounded-full"><X className="w-8 h-8" /></button>
+            </div>
+            
+            <div className="p-12">
+              <div className={`mb-10 text-center p-6 rounded-[32px] border-2 ${replayResult.match ? 'bg-emerald-50 border-emerald-100 text-emerald-800' : 'bg-amber-50 border-amber-100 text-amber-800'}`}>
+                <h2 className="text-3xl font-black uppercase tracking-tighter mb-2">{replayResult.status}</h2>
+                <p className="text-sm font-bold opacity-80 uppercase tracking-widest">
+                  {replayResult.match 
+                    ? "The AI model produced the exact same decision when re-run on the original inputs." 
+                    : "WARNING: The AI model yielded a different result than what is stored! Potential drift or record tempering!"}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-10">
+                <div className="space-y-6">
+                  <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-4">Stored Record</h4>
+                  <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
+                    <p className="text-[10px] font-black uppercase text-slate-400 mb-1">Decision</p>
+                    <p className={`text-2xl font-black mb-4 ${
+                      replayResult.stored_decision === 'Loan Approved' || replayResult.stored_decision === 'BUY' 
+                        ? 'text-emerald-600' 
+                        : (replayResult.stored_decision === 'Loan Rejected' || replayResult.stored_decision === 'SELL' ? 'text-rose-600' : 'text-slate-600')
+                    }`}>
+                      {replayResult.stored_decision}
+                    </p>
+                    <p className="text-[10px] font-black uppercase text-slate-400 mb-1">Confidence</p>
+                    <p className="text-lg font-bold text-slate-700">{(replayResult.stored_confidence * 100).toFixed(2)}%</p>
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-4">Live Replay Result</h4>
+                  <div className="bg-indigo-50/50 p-6 rounded-3xl border border-indigo-100">
+                    <p className="text-[10px] font-black uppercase text-indigo-400 mb-1">Generated Decision</p>
+                    <p className={`text-2xl font-black mb-4 ${
+                      replayResult.replayed_decision === 'Loan Approved' || replayResult.replayed_decision === 'BUY' 
+                        ? 'text-emerald-600' 
+                        : (replayResult.replayed_decision === 'Loan Rejected' || replayResult.replayed_decision === 'SELL' ? 'text-rose-600' : 'text-slate-600')
+                    }`}>
+                      {replayResult.replayed_decision}
+                    </p>
+                    <p className="text-[10px] font-black uppercase text-indigo-400 mb-1">Confidence</p>
+                    <p className="text-lg font-bold text-slate-700">{(replayResult.replayed_confidence * 100).toFixed(2)}%</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-12 flex justify-center">
+                 <button onClick={() => setReplayResult(null)} className="bg-slate-900 hover:bg-slate-800 text-white font-black px-12 py-5 rounded-full uppercase tracking-widest transition-all">
+                   Close Report
+                 </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -3,3 +3,8 @@ uvicorn
 pydantic
 sqlalchemy
 py-algorand-sdk
+yfinance
+pandas
+scikit-learn
+joblib
+numpy

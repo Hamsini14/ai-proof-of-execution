@@ -2,18 +2,26 @@ import uuid
 import time
 import datetime
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks # pyre-ignore[21]
+import traceback
 from fastapi.middleware.cors import CORSMiddleware # pyre-ignore[21]
 from sqlalchemy.orm import Session # pyre-ignore[21]
-from typing import List, Optional
+import pandas as pd
+import yfinance as yf
+from typing import List, Optional, Dict, Any
 
-from backend import models, database, crypto_utils, ai_engine, blockchain # pyre-ignore[21]
+from backend import models, database, crypto_utils, ai_engine, stock_engine, blockchain # pyre-ignore[21]
 from backend.behavior_detector import analyze_behavior
 
 app = FastAPI(title="AI Accountability Framework", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -82,6 +90,53 @@ def anchor_and_verify_task(decision_id: str, execution_hash: str):
             record.status = "Verified"
         else:
             # Hash mismatch → tampering detected during auto-verification
+            record.status = "Tampering Detected"
+
+        db.commit()
+    finally:
+        db.close()
+
+def anchor_and_verify_stock_task(decision_id: str, execution_hash: str):
+    """
+    Stage 6-7: Build Merkle tree for this single record and anchor to blockchain.
+    Stage 11: Auto-verify the record after anchoring for Stock.
+    """
+    time.sleep(1)
+
+    db = database.SessionLocal()
+    try:
+        record = db.query(database.StockExecutionRecordDB).filter(
+            database.StockExecutionRecordDB.decision_id == decision_id
+        ).first()
+        if not record:
+            return
+
+        merkle_root = crypto_utils.build_merkle_tree([execution_hash])
+        batch_id = f"STOCK_BATCH_{str(uuid.uuid4()).split('-')[0]}"
+        tx_id = blockchain.blockchain_client.anchor_merkle_root(batch_id, merkle_root)
+
+        record.merkle_root = merkle_root
+        record.blockchain_tx_id = tx_id
+        record.status = "Anchored"
+        db.commit()
+
+        ts_str = record.timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")
+        execution_record_dict = {
+            "decision_id": str(record.decision_id),
+            "input_hash": str(record.input_hash),
+            "ticker": str(record.ticker),
+            "current_price": float(record.current_price),
+            "ma_50": float(record.ma_50),
+            "rsi_14": float(record.rsi_14),
+            "decision": str(record.decision),
+            "confidence": float(record.confidence),
+            "timestamp": ts_str,
+        }
+        recomputed_hash = crypto_utils.generate_hash(execution_record_dict)
+
+        if recomputed_hash == record.execution_hash:
+            record.status = "Verified"
+        else:
             record.status = "Tampering Detected"
 
         db.commit()
@@ -170,6 +225,82 @@ def execute_ai_decision(
         model_version=ai_result["model_version"],
         decision=ai_result["decision"],
         confidence=ai_result["confidence"],
+        input_hash=input_hash,
+        execution_hash=execution_hash,
+        timestamp=timestamp,
+        status="Anchoring",
+    )
+
+# -----------------------------------------------------------------------
+# POST /api/stock/decision  — Stock Engine execution
+# -----------------------------------------------------------------------
+@app.post("/api/stock/decision", response_model=models.StockDecisionResponse)
+def execute_stock_decision(
+    input_data: models.StockInput,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(database.get_db),
+):
+    if blockchain.blockchain_client.get_system_status() == "HALTED":
+        raise HTTPException(status_code=503, detail="AI System Paused for Manual Review")
+
+    input_dict = input_data.model_dump()
+    input_hash = crypto_utils.generate_hash(input_dict)
+
+    try:
+        ai_result = stock_engine.execute_stock_decision(input_data.ticker)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    decision_id = f"STK_{str(uuid.uuid4()).split('-')[0]}"
+    timestamp = datetime.datetime.utcnow()
+
+    ts_str = timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")
+    execution_record_dict = {
+        "decision_id": decision_id,
+        "input_hash": input_hash,
+        "ticker": input_data.ticker,
+        "current_price": ai_result["current_price"],
+        "ma_50": ai_result["ma_50"],
+        "rsi_14": ai_result["rsi_14"],
+        "decision": ai_result["decision"],
+        "confidence": float(ai_result["confidence"]),
+        "timestamp": ts_str,
+    }
+
+    execution_hash = crypto_utils.generate_hash(execution_record_dict)
+
+    db_record = database.StockExecutionRecordDB(
+        decision_id=decision_id,
+        input_hash=input_hash,
+        ticker=input_data.ticker,
+        current_price=ai_result["current_price"],
+        ma_50=ai_result["ma_50"],
+        rsi_14=ai_result["rsi_14"],
+        decision=ai_result["decision"],
+        confidence=ai_result["confidence"],
+        timestamp=timestamp,
+        execution_hash=execution_hash,
+        merkle_root=None,
+        blockchain_tx_id="Pending",
+        status="Anchoring",
+        tampered=False,
+    )
+    db.add(db_record)
+    db.commit()
+
+    background_tasks.add_task(anchor_and_verify_stock_task, decision_id, execution_hash)
+
+    return models.StockDecisionResponse(
+        decision_id=decision_id,
+        ticker=input_data.ticker,
+        decision=ai_result["decision"],
+        confidence=ai_result["confidence"],
+        current_price=ai_result["current_price"],
+        ma_50=ai_result["ma_50"],
+        rsi_14=ai_result["rsi_14"],
         input_hash=input_hash,
         execution_hash=execution_hash,
         timestamp=timestamp,
@@ -278,17 +409,12 @@ def manual_tamper_record(
     # Flip or set custom values — blockchain hash is untouched
     original_decision = record.decision
     
-    if tamper_data and tamper_data.decision:
-        record.decision = tamper_data.decision
-    else:
-        record.decision = "Loan Rejected" if original_decision == "Loan Approved" else "Loan Approved"
-    
     if tamper_data and tamper_data.confidence is not None:
         record.confidence = tamper_data.confidence
     else:
         # Fallback flip logic
         curr_conf = float(record.confidence)
-        record.confidence = float(round(1.0 - curr_conf, 4))
+        record.confidence = float(round(float(1.0 - curr_conf), 4))
 
     # Tamper with input features if provided
     if tamper_data:
@@ -308,10 +434,95 @@ def manual_tamper_record(
         "execution_hash_unchanged": record.execution_hash,
     }
 
+# -----------------------------------------------------------------------
+# POST /api/stock/tamper/{decision_id} — Manual Tamper simulation on existing stock record
+# -----------------------------------------------------------------------
+@app.post("/api/stock/tamper/{decision_id}")
+def manual_tamper_stock_record(
+    decision_id: str, 
+    tamper_data: Optional[models.StockTamperRequest] = None,
+    db: Session = Depends(database.get_db)
+):
+    """
+    Demo: Modifies the stored stock execution record AFTER blockchain anchoring.
+    Changes the AI decision in the database — the blockchain hash does NOT change.
+    When verify is called next, the recomputed hash will differ from the anchored hash,
+    and Tampering Detected status will be set.
+    """
+    record = db.query(database.StockExecutionRecordDB).filter(
+        database.StockExecutionRecordDB.decision_id == decision_id
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Stock Decision not found")
+
+    if record.status == "Anchoring":
+        raise HTTPException(status_code=400, detail="Record not yet anchored. Please wait.")
+
+    original_decision = record.decision
+    
+    if tamper_data and tamper_data.decision:
+        record.decision = tamper_data.decision
+    else:
+        record.decision = "SELL" if original_decision == "BUY" else "BUY"
+    
+    if tamper_data and tamper_data.confidence is not None:
+        record.confidence = tamper_data.confidence
+    else:
+        curr_conf = float(record.confidence)
+        record.confidence = float(round(float(1.0 - curr_conf), 4))
+
+    if tamper_data:
+        if tamper_data.current_price is not None: record.current_price = tamper_data.current_price
+        if tamper_data.ma_50 is not None: record.ma_50 = tamper_data.ma_50
+        if tamper_data.rsi_14 is not None: record.rsi_14 = tamper_data.rsi_14
+
+    record.tampered = True
+    db.commit()
+
+    return {
+        "message": f"Stock record modified. Original decision was '{original_decision}'. Now shows '{record.decision}'.",
+        "new_decision": record.decision,
+        "original_decision": original_decision,
+        "execution_hash_unchanged": record.execution_hash,
+    }
+
+@app.get("/api/stock/history/{ticker}")
+def get_stock_history(ticker: str):
+    """
+    Fetch historical data for charting in the Analytics tab.
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="120d")
+        if hist.empty:
+            raise HTTPException(status_code=404, detail="Ticker not found or no data available")
+        
+        print(f"FETCHING HISTORY FOR: {ticker}")
+        # Compute MA50 for the chart overlay
+        hist['MA50'] = hist['Close'].rolling(window=50).mean()
+        
+        # Format for Recharts: list of dicts with date, price, ma
+        history_data = []
+        for index, row in hist.iterrows():
+            history_data.append({
+                "date": index.strftime('%Y-%m-%d'),
+                "price": float(round(float(row['Close']), 2)),
+                "ma50": float(round(float(row['MA50']), 2)) if not pd.isna(row['MA50']) else None
+            })
+        return history_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/audits", response_model=List[models.AuditRecord])
 def get_audits(db: Session = Depends(database.get_db)):
     return db.query(database.ExecutionRecordDB).order_by(
         database.ExecutionRecordDB.timestamp.desc()
+    ).all()
+
+@app.get("/api/stock/audits", response_model=List[models.StockAuditRecord])
+def get_stock_audits(db: Session = Depends(database.get_db)):
+    return db.query(database.StockExecutionRecordDB).order_by(
+        database.StockExecutionRecordDB.timestamp.desc()
     ).all()
 
 
@@ -396,6 +607,157 @@ def verify_record(decision_id: str, db: Session = Depends(database.get_db)):
         "merkle_root": record.merkle_root,
     }
 
+
+# -----------------------------------------------------------------------
+# POST /api/replay/{decision_id}  — Re-run the AI model on stored inputs
+# -----------------------------------------------------------------------
+@app.post("/api/replay/{decision_id}")
+def replay_decision(decision_id: str, db: Session = Depends(database.get_db)):
+    record = db.query(database.ExecutionRecordDB).filter(
+        database.ExecutionRecordDB.decision_id == decision_id
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Decision not found")
+
+    # Reconstruct the original input dictionary from the stored record
+    input_dict = {
+        "credit_score": int(record.credit_score),
+        "income": float(record.income),
+        "loan_amount": float(record.loan_amount),
+        "existing_debt": float(record.existing_debt),
+        "employment_status": str(record.employment_status),
+        "loan_term": int(record.loan_term),
+    }
+
+    # Re-run the core AI decision logic
+    ai_result = ai_engine.execute_decision(input_dict)
+    replayed_decision = ai_result["decision"]
+    replayed_confidence = ai_result["confidence"]
+
+    # Compare the new result with the stored result
+    if replayed_decision == record.decision:
+        status_msg = "Decision Verified"
+        match = True
+    else:
+        status_msg = "Model Behavior Changed / Potential Drift"
+        match = False
+
+    return {
+        "decision_id": decision_id,
+        "match": match,
+        "status": status_msg,
+        "stored_decision": record.decision,
+        "replayed_decision": replayed_decision,
+        "stored_confidence": record.confidence,
+        "replayed_confidence": replayed_confidence,
+    }
+
+# -----------------------------------------------------------------------
+# POST /api/stock/verify/{decision_id}  — Manual on-demand verification
+# -----------------------------------------------------------------------
+@app.post("/api/stock/verify/{decision_id}")
+def verify_stock_record(decision_id: str, db: Session = Depends(database.get_db)):
+    record = db.query(database.StockExecutionRecordDB).filter(
+        database.StockExecutionRecordDB.decision_id == decision_id
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Decision not found")
+
+    if record.status == "Anchoring":
+        return {
+            "result": False,
+            "status": "Anchoring",
+            "message": "Still anchoring to blockchain. Please wait and try again.",
+        }
+
+    ts_str = record.timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")
+    execution_record_dict = {
+        "decision_id": str(record.decision_id),
+        "input_hash": str(record.input_hash),
+        "ticker": str(record.ticker),
+        "current_price": float(record.current_price),
+        "ma_50": float(record.ma_50),
+        "rsi_14": float(record.rsi_14),
+        "decision": str(record.decision),
+        "confidence": float(record.confidence),
+        "timestamp": ts_str,
+    }
+    recomputed_hash = crypto_utils.generate_hash(execution_record_dict)
+
+    if recomputed_hash != record.execution_hash:
+        record.status = "Tampering Detected"
+        db.commit()
+        return {
+            "result": False,
+            "status": "Tampering Detected",
+            "message": "TAMPERING DETECTED — execution record was modified after hashing!",
+            "stored_hash": record.execution_hash,
+            "recomputed_hash": recomputed_hash,
+        }
+
+    tx_data = blockchain.blockchain_client.get_transaction(record.blockchain_tx_id)
+    if not tx_data:
+        return {
+            "result": False,
+            "status": "Anchoring",
+            "message": "Blockchain transaction not yet confirmed.",
+            "recomputed_hash": recomputed_hash,
+        }
+
+    if tx_data.get("merkle_root") != record.merkle_root:
+        record.status = "Tampering Detected"
+        db.commit()
+        return {
+            "result": False,
+            "status": "Tampering Detected",
+            "message": "Merkle root mismatch — blockchain record does not match.",
+            "recomputed_hash": recomputed_hash,
+        }
+
+    record.status = "Verified"
+    db.commit()
+    return {
+        "result": True,
+        "status": "Verified",
+        "message": "AI decision authentic. Input and output not altered.",
+        "recomputed_hash": recomputed_hash,
+        "blockchain_tx": record.blockchain_tx_id,
+        "merkle_root": record.merkle_root,
+    }
+
+# -----------------------------------------------------------------------
+# POST /api/stock/replay/{decision_id}  — Re-run the AI model on stored inputs
+# -----------------------------------------------------------------------
+@app.post("/api/stock/replay/{decision_id}")
+def replay_stock_decision(decision_id: str, db: Session = Depends(database.get_db)):
+    record = db.query(database.StockExecutionRecordDB).filter(
+        database.StockExecutionRecordDB.decision_id == decision_id
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Decision not found")
+
+    ai_result = stock_engine.execute_stock_decision_from_indicators(
+        record.current_price, record.ma_50, record.rsi_14
+    )
+    replayed_decision = ai_result["decision"]
+    replayed_confidence = ai_result["confidence"]
+
+    if replayed_decision == record.decision:
+        status_msg = "Decision Verified"
+        match = True
+    else:
+        status_msg = "Model Behavior Changed / Potential Drift"
+        match = False
+
+    return {
+        "decision_id": decision_id,
+        "match": match,
+        "status": status_msg,
+        "stored_decision": record.decision,
+        "replayed_decision": replayed_decision,
+        "stored_confidence": record.confidence,
+        "replayed_confidence": replayed_confidence,
+    }
 
 # -----------------------------------------------------------------------
 # GET /api/system/status

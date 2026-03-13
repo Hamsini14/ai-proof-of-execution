@@ -30,6 +30,24 @@ class ExecutionRecordDB(Base):
     status          = Column(String, default="Anchoring")  # Anchoring | Anchored | Verified | Tampering Detected
     tampered        = Column(Boolean, default=False)        # True if this record was tampered for demo
 
+class StockExecutionRecordDB(Base):
+    __tablename__ = "stock_execution_records"
+
+    decision_id     = Column(String, primary_key=True, index=True)
+    ticker          = Column(String, index=True)
+    current_price   = Column(Float)
+    ma_50           = Column(Float)
+    rsi_14          = Column(Float)
+    decision        = Column(String) # BUY, SELL, HOLD
+    confidence      = Column(Float)
+    timestamp       = Column(DateTime, default=datetime.datetime.utcnow)
+    execution_hash  = Column(String, index=True)
+    merkle_root     = Column(String, nullable=True) 
+    blockchain_tx_id = Column(String, default="Pending")
+    status          = Column(String, default="Anchoring") 
+    tampered        = Column(Boolean, default=False)
+    input_hash      = Column(String, index=True)
+
 def get_db():
     db = SessionLocal()
     try:

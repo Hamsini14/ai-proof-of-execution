@@ -48,6 +48,7 @@ class AuditRecord(BaseModel):
     timestamp: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
 class TamperRequest(BaseModel):
     decision: Optional[str] = None
     confidence: Optional[float] = None
@@ -56,3 +57,46 @@ class TamperRequest(BaseModel):
     existing_debt: Optional[float] = None
     employment_status: Optional[str] = None
     loan_term: Optional[int] = None
+
+class StockInput(BaseModel):
+    ticker: str
+
+class StockDecisionResponse(BaseModel):
+    decision_id: str
+    ticker: str
+    decision: str
+    confidence: float
+    current_price: float
+    ma_50: float
+    rsi_14: float
+    input_hash: str
+    execution_hash: str
+    timestamp: datetime
+    status: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+class StockAuditRecord(BaseModel):
+    decision_id: str
+    ticker: str
+    decision: str
+    confidence: float
+    current_price: Optional[float] = None
+    ma_50: Optional[float] = None
+    rsi_14: Optional[float] = None
+    input_hash: str
+    execution_hash: str
+    merkle_root: Optional[str] = None
+    blockchain_tx_id: str
+    status: str
+    tampered: bool
+    timestamp: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+class StockTamperRequest(BaseModel):
+    decision: Optional[str] = None
+    confidence: Optional[float] = None
+    current_price: Optional[float] = None
+    ma_50: Optional[float] = None
+    rsi_14: Optional[float] = None
