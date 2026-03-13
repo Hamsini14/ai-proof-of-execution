@@ -9,6 +9,7 @@ import {
   LineChart, Line, Legend
 } from 'recharts';
 
+// Backend API endpoint
 const API_BASE = 'http://localhost:8000/api';
 
 const DEFAULT_INPUT = {
@@ -22,26 +23,35 @@ const DEFAULT_INPUT = {
 
 const Dashboard = () => {
   const [records, setRecords] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [systemStatus, setSystemStatus] = useState('SAFE');
-  const [verifying, setVerifying] = useState(null);
-  const [verifyResult, setVerifyResult] = useState(null);
-  const [input, setInput] = useState(DEFAULT_INPUT);
-  const [submitting, setSubmitting] = useState(false);
-  const [lastResult, setLastResult] = useState(null);
-  const [tamperingRecord, setTamperingRecord] = useState(null);
-  const [tamperForm, setTamperForm] = useState({ decision: '', confidence: 0 });
   const [stats, setStats] = useState({
     total_applicants: 0,
     average_credit_score: 0,
     loan_approval_rate: 0,
-    credit_score_distribution: [],
-    decisions_over_time: []
+    credit_score_distribution: []
   });
+  const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab ] = useState('overview'); // overview | engine | audit
+  const [systemStatus, setSystemStatus] = useState('SAFE');
+  
+  const [formData, setFormData] = useState(DEFAULT_INPUT);
+  const [tamperingRecord, setTamperingRecord] = useState(null);
+  const [tamperForm, setTamperForm] = useState({ 
+    decision: '', 
+    confidence: 0,
+    income: 0,
+    loan_amount: 0,
+    existing_debt: 0,
+    employment_status: 'employed',
+    loan_term: 36
+  });
+  const [verifyResult, setVerifyResult] = useState(null);
+  const [verifying, setVerifying] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [lastResult, setLastResult] = useState(null);
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 3000); // Polling faster to see status changes
+    const interval = setInterval(fetchData, 3000); 
     return () => clearInterval(interval);
   }, []);
 
@@ -57,19 +67,16 @@ const Dashboard = () => {
       if (statsRes.ok) setStats(await statsRes.json());
     } catch (err) {
       console.error('Fetch error:', err);
-    } finally {
-      setLoading(false);
     }
   };
 
-  const handleVerify = async (decisionId) => {
+  const verifyRecord = async (decisionId) => {
     setVerifying(decisionId);
     setVerifyResult(null);
     try {
       const res = await fetch(`${API_BASE}/verify/${decisionId}`, { method: 'POST' });
       const data = await res.json();
       setVerifyResult({ id: decisionId, ...data });
-      // Keep result showing for a while
       setTimeout(() => setVerifyResult(null), 8000);
     } catch (err) {
       console.error('Verify error:', err);
@@ -82,16 +89,15 @@ const Dashboard = () => {
     setSubmitting(true);
     setLastResult(null);
     try {
-      const endpoint = '/decision';
       const payload = {
-        ...input,
-        credit_score: parseInt(input.credit_score),
-        income: parseFloat(input.income),
-        loan_amount: parseFloat(input.loan_amount),
-        existing_debt: parseFloat(input.existing_debt),
-        loan_term: parseInt(input.loan_term),
+        ...formData,
+        credit_score: parseInt(formData.credit_score),
+        income: parseFloat(formData.income),
+        loan_amount: parseFloat(formData.loan_amount),
+        existing_debt: parseFloat(formData.existing_debt),
+        loan_term: parseInt(formData.loan_term),
       };
-      const res = await fetch(`${API_BASE}${endpoint}`, {
+      const res = await fetch(`${API_BASE}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -102,6 +108,8 @@ const Dashboard = () => {
       } else {
         setLastResult(data);
         await fetchData();
+        // Commented out automatic tab switch as requested
+        // setActiveTab('audit');
       }
     } catch (err) {
       console.error(err);
@@ -109,427 +117,362 @@ const Dashboard = () => {
       setSubmitting(false);
     }
   };
+
   const openTamperModal = (record) => {
     setTamperingRecord(record);
     setTamperForm({
       decision: record.decision === 'Loan Approved' ? 'Loan Rejected' : 'Loan Approved',
-      confidence: parseFloat((1.0 - record.confidence).toFixed(2))
+      confidence: parseFloat((1.0 - record.confidence).toFixed(2)),
+      income: record.income || 0,
+      loan_amount: record.loan_amount || 0,
+      existing_debt: record.existing_debt || 0,
+      employment_status: record.employment_status || 'employed',
+      loan_term: record.loan_term || 36
     });
   };
 
   const handleTamper = async () => {
     if (!tamperingRecord) return;
-    
     try {
       const res = await fetch(`${API_BASE}/tamper/${tamperingRecord.decision_id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tamperForm),
       });
-      
       if (!res.ok) {
         const err = await res.json();
         alert(err.detail || 'Tamper failed');
         return;
       }
-      
       await fetchData();
       setTamperingRecord(null);
-      console.log('Record tampered successfully.');
     } catch (err) {
       console.error('Tamper error:', err);
     }
   };
 
+  const tabs = [
+    { id: 'overview', label: 'Analytics', icon: <TrendingUp className="w-4 h-4" /> },
+    { id: 'engine', label: 'Decision Engine', icon: <Activity className="w-4 h-4" /> },
+    { id: 'audit', label: 'Audit Log', icon: <Blocks className="w-4 h-4" /> }
+  ];
+
+  const downloadCSV = () => {
+    if (records.length === 0) return;
+    const headers = ["Decision ID", "Timestamp", "Model Version", "Credit Score", "Income", "Loan Amount", "Debt", "Employment", "Term", "Decision", "Confidence", "Status", "Input Hash", "Execution Hash", "Blockchain TX"];
+    const csvRows = [
+      headers.join(","),
+      ...records.map(rec => [
+        `"${rec.decision_id}"`, `"${new Date(rec.timestamp).toLocaleString()}"`, `"${rec.model_version}"`, `"${rec.credit_score}"`, `"${rec.income}"`, `"${rec.loan_amount}"`, `"${rec.existing_debt}"`, `"${rec.employment_status}"`, `"${rec.loan_term}"`, `"${rec.decision}"`, `"${(rec.confidence * 100).toFixed(2)}%"`, `"${rec.status}"`, `"${rec.input_hash}"`, `"${rec.execution_hash}"`, `"${rec.blockchain_tx_id}"`
+      ].join(","))
+    ];
+    const blob = new Blob([csvRows.join("\n")], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.style.display = 'none'; a.href = url; a.download = `AI_Audit_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url);
+  };
+
   const getStatusBadge = (status) => {
+    const base = "px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-tight flex items-center gap-1.5 border";
     switch (status) {
-      case 'Verified':
-        return <span className="px-2 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700 border border-green-200 flex items-center gap-1"><ShieldCheck className="w-3 h-3"/> Verified</span>;
-      case 'Anchored':
-        return <span className="px-2 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-700 border border-blue-200 flex items-center gap-1"><Blocks className="w-3 h-3"/> Anchored</span>;
-      case 'Anchoring':
-        return <span className="px-2 py-1 rounded-full text-xs font-bold bg-yellow-100 text-yellow-700 border border-yellow-200 flex items-center gap-1"><Activity className="w-3 h-3 animate-pulse"/> Anchoring</span>;
-      case 'Tampering Detected':
-        return <span className="px-2 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 border border-red-400 animate-bounce flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> Tampering Detected</span>;
-      default:
-        return <span className="px-2 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-700">{status}</span>;
+      case 'Verified': return <span className={`${base} bg-emerald-50 text-emerald-700 border-emerald-100`}><ShieldCheck className="w-3.5 h-3.5"/> Verified</span>;
+      case 'Anchored': return <span className={`${base} bg-indigo-50 text-indigo-700 border-indigo-100`}><Blocks className="w-3.5 h-3.5"/> Anchored</span>;
+      case 'Anchoring': return <span className={`${base} bg-amber-50 text-amber-700 border-amber-100`}><Activity className="w-3.5 h-3.5 animate-pulse"/> Anchoring</span>;
+      case 'Tampering Detected': return <span className={`${base} bg-rose-50 text-rose-700 border-rose-400 animate-bounce`}><AlertTriangle className="w-3.5 h-3.5"/> Breach Detected</span>;
+      default: return <span className={`${base} bg-slate-50 text-slate-500 border-slate-100`}>{status}</span>;
     }
   };
 
-  const fieldClass =
-    'w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none text-sm bg-white transition-all';
-  const labelClass = 'block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1';
+  const labelClass = 'block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2';
+  const fieldClass = 'w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-50 outline-none text-sm font-bold text-slate-700 transition-all';
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-8 font-sans selection:bg-indigo-100">
       {/* Header */}
       <header className="max-w-7xl mx-auto mb-10 flex justify-between items-end">
         <div>
-          <div className="flex items-center gap-3 mb-2">
-             <div className="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-200">
+          <div className="flex items-center gap-4 mb-2">
+             <div className="bg-indigo-600 p-3 rounded-2xl shadow-xl shadow-indigo-100">
                 <ShieldCheck className="w-8 h-8 text-white" />
              </div>
-             <h1 className="text-4xl font-black text-slate-800 tracking-tight">AI Audit <span className="text-indigo-600">Pro</span></h1>
+             <h1 className="text-4xl font-black text-slate-900 tracking-tighter">AI Audit <span className="text-indigo-600">PRO</span></h1>
           </div>
-          <p className="text-slate-500 font-medium">Immutable Blockchain Accountability for AI Decisons</p>
+          <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Immutable Accountability Protocol v2.4</p>
         </div>
         
-        <div className={`px-6 py-3 rounded-2xl font-bold flex items-center gap-3 shadow-sm border transition-all ${
-            systemStatus === 'SAFE' 
-              ? 'bg-emerald-50 text-emerald-700 border-emerald-100' 
-              : 'bg-rose-50 text-rose-700 border-rose-100 animate-pulse'
-          }`}>
-          <div className={`w-2.5 h-2.5 rounded-full ${systemStatus === 'SAFE' ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
-          <span className="uppercase tracking-widest text-xs">System Status: {systemStatus}</span>
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={downloadCSV}
+            className="group bg-white hover:bg-slate-900 hover:text-white text-slate-700 font-black py-4 px-8 rounded-3xl border border-slate-200 shadow-xl shadow-slate-200/50 transition-all duration-300 flex items-center gap-3 text-xs uppercase tracking-widest"
+          >
+            <Database className="w-4 h-4 group-hover:scale-110 transition-transform" />
+            Export Audit Trial
+          </button>
+          
+          <div className={`px-8 py-4 rounded-3xl font-black flex items-center gap-3 shadow-xl border transition-all ${
+              systemStatus === 'SAFE' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-rose-50 text-rose-700 border-rose-100 animate-pulse'
+            }`}>
+            <div className={`w-3 h-3 rounded-full ${systemStatus === 'SAFE' ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
+            <span className="uppercase tracking-[0.2em] text-[10px]">{systemStatus} OPERATIONAL</span>
+          </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto space-y-8">
-        
-        {/* --- Stats Top Row --- */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-4">
-            <div className="bg-indigo-50 p-3 rounded-2xl text-indigo-600">
-               <Users className="w-6 h-6" />
+      <main className="max-w-7xl mx-auto space-y-10">
+        {/* Suspicious Behavior Alert */}
+        {stats.behavior_analysis?.is_suspicious && (
+          <div className="bg-rose-600 p-8 rounded-[40px] shadow-2xl shadow-rose-200 text-white flex items-center justify-between border-4 border-white animate-pulse">
+            <div className="flex items-center gap-6">
+              <div className="bg-white/20 p-4 rounded-3xl backdrop-blur-md">
+                <AlertTriangle className="w-10 h-10" />
+              </div>
+              <div>
+                <h3 className="text-2xl font-black uppercase tracking-tighter text-white">Suspicious AI Behavior Detected</h3>
+                <p className="text-rose-100 font-bold text-xs uppercase tracking-widest">{stats.behavior_analysis.reason}</p>
+              </div>
             </div>
-            <div>
-               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Applicants</p>
-               <h3 className="text-2xl font-black text-slate-800">{stats.total_applicants}</h3>
+            <div className="flex gap-4">
+              <div className="bg-white/10 px-6 py-3 rounded-2xl backdrop-blur-sm border border-white/20">
+                <p className="text-[10px] font-black uppercase text-rose-200 mb-1">Recent Rejection Rate</p>
+                <p className="text-xl font-black text-white">{stats.behavior_analysis.rejection_rate}%</p>
+              </div>
+              <div className="bg-white/10 px-6 py-3 rounded-2xl backdrop-blur-sm border border-white/20">
+                <p className="text-[10px] font-black uppercase text-rose-200 mb-1">Consecutive Count</p>
+                <p className="text-xl font-black text-white">{stats.behavior_analysis.consecutive_rejections}</p>
+              </div>
             </div>
           </div>
-          
-          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-4">
-            <div className="bg-emerald-50 p-3 rounded-2xl text-emerald-600">
-               <Target className="w-6 h-6" />
-            </div>
-            <div>
-               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Avg Credit Score</p>
-               <h3 className="text-2xl font-black text-slate-800">{stats.average_credit_score}</h3>
-            </div>
-          </div>
+        )}
 
-          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-4">
-            <div className="bg-blue-50 p-3 rounded-2xl text-blue-600">
-               <Activity className="w-6 h-6" />
-            </div>
-            <div>
-               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Approval Rate</p>
-               <h3 className="text-2xl font-black text-slate-800">{stats.loan_approval_rate}%</h3>
-            </div>
-          </div>
-        </div>
+        {/* Tab Switcher */}
+        <nav className="flex p-2 bg-slate-200/50 backdrop-blur-xl rounded-[32px] w-fit border border-slate-200/50 shadow-inner">
+           {tabs.map(tab => (
+             <button
+               key={tab.id}
+               onClick={() => setActiveTab(tab.id)}
+               className={`px-10 py-4 rounded-[24px] font-black text-[10px] uppercase tracking-[0.2em] transition-all duration-500 flex items-center gap-3 ${
+                 activeTab === tab.id 
+                   ? 'bg-white text-indigo-600 shadow-2xl shadow-indigo-100 scale-105' 
+                   : 'text-slate-500 hover:text-slate-800'
+               }`}
+             >
+               {tab.icon}
+               {tab.label}
+             </button>
+           ))}
+        </nav>
 
-        {/* --- Graphs Row --- */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-           <div className="bg-white p-6 rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100">
-              <div className="flex items-center gap-2 mb-6">
-                 <BarChart3 className="w-5 h-5 text-indigo-600" />
-                 <h2 className="font-bold text-sm uppercase tracking-wider">Approval Rate by Credit Score</h2>
-              </div>
-              <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={stats.credit_score_distribution}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="range" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} />
-                    <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} unit="%" />
-                    <Tooltip 
-                      contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}}
-                      cursor={{fill: '#f8fafc'}}
-                    />
-                    <Bar dataKey="approval_rate" fill="#6366f1" radius={[6, 6, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-           </div>
-
-           <div className="bg-white p-6 rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100">
-              <div className="flex items-center gap-2 mb-6">
-                 <Activity className="w-5 h-5 text-indigo-600" />
-                 <h2 className="font-bold text-sm uppercase tracking-wider">Decisions Processed Over Time</h2>
-              </div>
-              <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={stats.decisions_over_time}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} />
-                    <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} />
-                    <Tooltip 
-                      contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}}
-                    />
-                    <Line type="monotone" dataKey="decisions" stroke="#6366f1" strokeWidth={3} dot={{r: 4, fill: '#6366f1', strokeWidth: 2, stroke: '#fff'}} activeDot={{r: 6}} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-           </div>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-8">
-        
-        {/* --- Left Column: Simulation Controller --- */}
-        <div className="xl:col-span-4 space-y-6">
-          <div className="bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
-            <div className="bg-slate-800 p-4 text-white flex items-center gap-2">
-                <TrendingUp className="w-5 h-5 text-indigo-400" />
-                <h2 className="font-bold text-sm uppercase tracking-wider">Simulation Controller</h2>
+        {/* --- Overview Tab --- */}
+        {activeTab === 'overview' && (
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
+            <div className="xl:col-span-4 space-y-6">
+               {[
+                 { label: 'Total Executions', val: stats.total_applicants, icon: <Users/>, col: 'indigo' },
+                 { label: 'Integrity Score', val: '99.9%', icon: <ShieldCheck/>, col: 'emerald' },
+                 { label: 'Approval Index', val: `${stats.loan_approval_rate}%`, icon: <Activity/>, col: 'blue' },
+                 { label: 'Recent Rejection Rate', val: `${stats.behavior_analysis?.rejection_rate || 0}%`, icon: <Bug/>, col: stats.behavior_analysis?.is_suspicious ? 'rose' : 'slate' },
+                 { label: 'Consecutive Rejections', val: stats.behavior_analysis?.consecutive_rejections || 0, icon: <AlertTriangle/>, col: stats.behavior_analysis?.is_suspicious ? 'rose' : 'slate' }
+               ].map((s, i) => (
+                 <div key={i} className={`bg-white p-8 rounded-[40px] shadow-sm border border-slate-100 flex items-center gap-6 transition-all ${s.col === 'rose' ? 'border-rose-200 bg-rose-50/20' : ''}`}>
+                   <div className={`p-4 rounded-3xl bg-${s.col === 'slate' ? 'slate' : s.col}-50 text-${s.col === 'slate' ? 'slate' : s.col}-600 shadow-inner`}>{s.icon}</div>
+                   <div>
+                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
+                     <h3 className="text-3xl font-black text-slate-900 tracking-tight">{s.val}</h3>
+                   </div>
+                 </div>
+               ))}
             </div>
             
-            <div className="p-6 space-y-5">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-1">
-                  <label className={labelClass}>Credit Score</label>
-                  <input type="number" value={input.credit_score} onChange={(e) => setInput({ ...input, credit_score: e.target.value })} className={fieldClass} />
-                </div>
-                <div className="col-span-1">
-                  <label className={labelClass}>Annual Income ($)</label>
-                  <input type="number" value={input.income} onChange={(e) => setInput({ ...input, income: e.target.value })} className={fieldClass} />
-                </div>
-                <div className="col-span-1">
-                  <label className={labelClass}>Loan Amount ($)</label>
-                  <input type="number" value={input.loan_amount} onChange={(e) => setInput({ ...input, loan_amount: e.target.value })} className={fieldClass} />
-                </div>
-                <div className="col-span-1">
-                  <label className={labelClass}>Existing Debt ($)</label>
-                  <input type="number" value={input.existing_debt} onChange={(e) => setInput({ ...input, existing_debt: e.target.value })} className={fieldClass} />
-                </div>
-                <div className="col-span-1">
-                  <label className={labelClass}>Employment</label>
-                  <select value={input.employment_status} onChange={(e) => setInput({ ...input, employment_status: e.target.value })} className={fieldClass}>
-                    <option value="employed">Employed</option>
-                    <option value="self_employed">Self-Employed</option>
-                    <option value="unemployed">Unemployed</option>
-                  </select>
-                </div>
-                <div className="col-span-1">
-                  <label className={labelClass}>Term (Mo)</label>
-                  <select value={input.loan_term} onChange={(e) => setInput({ ...input, loan_term: e.target.value })} className={fieldClass}>
-                    {[12, 24, 36, 48, 60].map((t) => <option key={t} value={t}>{t} Months</option>)}
-                  </select>
-                </div>
-              </div>
-
-              <div className="pt-4 flex flex-col gap-3">
-                <button
-                  onClick={() => runDecision()}
-                  disabled={submitting || systemStatus === 'HALTED'}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-xl transition-all disabled:opacity-50 shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
-                >
-                  <ShieldCheck className="w-5 h-5" />
-                  Run AI Decision
-                </button>
-                <p className="text-[10px] text-center text-slate-400 font-medium px-4">
-                  Runs the full accountability pipeline: hashing, behavioral checks, and blockchain anchoring.
-                </p>
-              </div>
+            <div className="xl:col-span-8 bg-white p-10 rounded-[48px] shadow-2xl shadow-slate-200/40 border border-slate-100">
+               <div className="flex justify-between items-start mb-12">
+                  <div className="flex items-center gap-3">
+                     <BarChart3 className="w-6 h-6 text-indigo-600" />
+                     <h2 className="font-black text-sm uppercase tracking-[0.2em] text-slate-800">Decision Landscape</h2>
+                  </div>
+               </div>
+               <div className="h-80 w-full">
+                 <ResponsiveContainer width="100%" height="100%">
+                   <BarChart data={stats.credit_score_distribution}>
+                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                     <XAxis dataKey="range" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} />
+                     <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#94a3b8'}} unit="%" />
+                     <Tooltip contentStyle={{borderRadius: '24px', border: 'none', boxShadow: '0 25px 50px -12px rgb(0 0 0 / 0.15)'}} cursor={{fill: '#f8fafc'}} />
+                     <Bar dataKey="approval_rate" fill="#6366f1" radius={[12, 12, 0, 0]} barSize={50} />
+                   </BarChart>
+                 </ResponsiveContainer>
+               </div>
             </div>
           </div>
+        )}
 
-          {/* Result Card */}
-          {lastResult && (
-            <div className={`rounded-3xl border p-6 shadow-lg animate-in slide-in-from-left-4 duration-500 ${lastResult.decision === 'Loan Approved' ? 'bg-emerald-50 border-emerald-100' : 'bg-rose-50 border-rose-100'}`}>
-              <div className="flex justify-between items-start mb-4">
-                 <div>
-                    <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-1">AI Decision</p>
-                    <h3 className={`text-2xl font-black ${lastResult.decision === 'Loan Approved' ? 'text-emerald-700' : 'text-rose-700'}`}>{lastResult.decision}</h3>
-                 </div>
-                 <div className="bg-white/50 px-3 py-1 rounded-full text-xs font-bold border border-white/50">{lastResult.status}</div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex justify-between text-xs font-bold text-slate-500">
-                    <span>Confidence Score</span>
-                    <span>{(lastResult.confidence * 100).toFixed(1)}%</span>
-                </div>
-                <div className="h-3 bg-slate-200/50 rounded-full overflow-hidden border border-white/50">
-                    <div className={`h-full transition-all duration-1000 ${lastResult.decision === 'Loan Approved' ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ width: `${(lastResult.confidence * 100).toFixed(0)}%` }}></div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        {/* --- Engine Tab --- */}
+        {activeTab === 'engine' && (
+          <div className="max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-8 duration-700">
+            <div className="bg-white p-16 rounded-[64px] shadow-2xl shadow-indigo-100 border border-indigo-50 relative overflow-hidden">
+               <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-50 rounded-full blur-[120px] -mr-48 -mt-48 opacity-40"></div>
+               <div className="relative">
+                  <div className="flex items-center gap-5 mb-12">
+                    <div className="bg-indigo-600 p-4 rounded-3xl shadow-xl shadow-indigo-200 text-white"><Activity className="w-8 h-8"/></div>
+                    <div>
+                      <h2 className="text-3xl font-black text-slate-900 tracking-tight">AI Decision Engine</h2>
+                      <p className="text-slate-400 text-xs font-bold uppercase tracking-[0.2em] mt-1">Algorithmic Risk Assessment</p>
+                    </div>
+                  </div>
 
-        {/* --- Right Column: Audit Log --- */}
-        <div className="xl:col-span-8">
-          <div className="bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden min-h-[600px]">
-             <div className="bg-slate-800 p-4 text-white flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                    <Database className="w-5 h-5 text-indigo-400" />
-                    <h2 className="font-bold text-sm uppercase tracking-wider">Execution Audit Log</h2>
-                </div>
-                <div className="text-[10px] opacity-60 font-mono">LIVE_UPDATE: ON</div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-[0.15em]">
-                    <th className="py-5 px-6">ID & Model</th>
-                    <th className="py-5 px-6">Decision Result</th>
-                    <th className="py-5 px-6">Storage Proof</th>
-                    <th className="py-5 px-6">Status</th>
-                    <th className="py-5 px-6 text-right">Verification</th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm font-medium">
-                  {records.map((rec) => (
-                    <tr key={rec.decision_id} className={`border-b border-slate-50 transition-all ${rec.status === 'Tampering Detected' ? 'bg-rose-50/30' : 'hover:bg-indigo-50/30'}`}>
-                      <td className="py-5 px-6">
-                        <div className="font-mono text-[10px] text-slate-400 mb-1">{rec.decision_id}</div>
-                        <div className="text-xs text-slate-600 font-bold uppercase">{rec.model_version}</div>
-                      </td>
-                      <td className="py-5 px-6">
-                        <div className={`font-black ${rec.decision === 'Loan Approved' ? 'text-emerald-600' : 'text-rose-600'}`}>{rec.decision}</div>
-                        <div className="text-[10px] text-slate-400 mt-1">Proof Hash: {rec.execution_hash.substring(0,12)}...</div>
-                      </td>
-                      <td className="py-5 px-6">
-                         {rec.blockchain_tx_id !== 'Pending' ? (
-                            <div className="space-y-1">
-                                <div className="text-[10px] font-bold text-indigo-600 flex items-center gap-1">
-                                    <ShieldCheck className="w-3 h-3"/> ALGO_TX_ANCHORED
-                                </div>
-                                <div className="font-mono text-[9px] text-slate-400 truncate w-32">{rec.blockchain_tx_id}</div>
-                            </div>
-                         ) : (
-                            <div className="text-[10px] text-slate-300 italic">Awaiting Anchoring...</div>
-                         )}
-                      </td>
-                      <td className="py-5 px-6">{getStatusBadge(rec.status)}</td>
-                      <td className="py-5 px-6 text-right">
-                      <div className="flex flex-col gap-2 items-end">
-                        <button
-                          onClick={() => handleVerify(rec.decision_id)}
-                          disabled={verifying === rec.decision_id}
-                          className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                            rec.status === 'Anchoring' 
-                              ? 'opacity-30 cursor-not-allowed bg-slate-100' 
-                              : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white shadow-sm'
-                          }`}
-                        >
-                          {verifying === rec.decision_id ? 'Checking...' : 'Verify'}
-                        </button>
-                        
-                        {rec.status === 'Verified' && (
-                          <button
-                            onClick={() => openTamperModal(rec)}
-                            className="bg-rose-50 border border-rose-100 text-rose-600 hover:bg-rose-600 hover:text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm flex items-center gap-1"
-                          >
-                            <Bug className="w-3 h-3" />
-                            Simulate Tamper
-                          </button>
-                        )}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+                    {['credit_score', 'income', 'loan_amount', 'existing_debt'].map(f => (
+                      <div key={f}>
+                        <label className={labelClass}>{f.replace('_', ' ')}</label>
+                        <input type="number" value={formData[f]} onChange={(e) => setFormData({...formData, [f]: e.target.value})} className={fieldClass} />
                       </div>
-                      </td>
-                    </tr>
-                  ))}
-                  {records.length === 0 && !loading && (
-                    <tr>
-                      <td colSpan="5" className="py-20 text-center">
-                        <div className="flex flex-col items-center opacity-20">
-                            <Database className="w-16 h-16 mb-4" />
-                            <p className="font-black uppercase tracking-[0.2em]">No Audit Data</p>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                    ))}
+                    <div>
+                      <label className={labelClass}>Employment</label>
+                      <select className={fieldClass} value={formData.employment_status} onChange={(e) => setFormData({...formData, employment_status: e.target.value})}>
+                        <option value="employed">Employed</option>
+                        <option value="self_employed">Self Employed</option>
+                        <option value="unemployed">Unemployed</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Loan Term</label>
+                      <input type="number" value={formData.loan_term} onChange={(e) => setFormData({...formData, loan_term: e.target.value})} className={fieldClass} />
+                    </div>
+                  </div>
+
+                  <button onClick={runDecision} disabled={submitting} className="w-full mt-16 bg-slate-900 hover:bg-indigo-600 text-white font-black py-7 rounded-[32px] transition-all duration-500 shadow-2xl shadow-indigo-100 flex items-center justify-center gap-4 uppercase tracking-[0.3em] text-sm group">
+                    {submitting ? 'Executing Protocol...' : 'Generate Verified Decision'}
+                    <Database className="w-6 h-6 group-hover:rotate-12 transition-transform" />
+                  </button>
+               </div>
+
+               {/* Result Card Integration */}
+               {lastResult && (
+                 <div className={`mt-12 p-10 rounded-[48px] border-2 animate-in zoom-in-95 slide-in-from-bottom-5 duration-700 ${
+                   lastResult.decision === 'Loan Approved' ? 'bg-emerald-50/50 border-emerald-100' : 'bg-rose-50/50 border-rose-100'
+                 }`}>
+                   <div className="flex justify-between items-start mb-8">
+                     <div>
+                        <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-2">AI Protocol Verdict</p>
+                        <h3 className={`text-4xl font-black tracking-tighter ${lastResult.decision === 'Loan Approved' ? 'text-emerald-700' : 'text-rose-700'}`}>
+                          {lastResult.decision}
+                        </h3>
+                     </div>
+                     <div className="bg-white px-4 py-2 rounded-2xl text-[10px] font-black uppercase tracking-[0.1em] border border-slate-100 shadow-sm">
+                        Status: <span className={lastResult.status === 'Verified' ? 'text-emerald-600' : 'text-amber-600'}>{lastResult.status}</span>
+                     </div>
+                   </div>
+                   
+                   <div className="space-y-4">
+                     <div className="flex justify-between items-end">
+                       <div>
+                          <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em] mb-1">Confidence Score</p>
+                          <p className="text-xl font-black text-slate-800">{(lastResult.confidence * 100).toFixed(1)}% Trust Accuracy</p>
+                       </div>
+                       <button onClick={() => setActiveTab('audit')} className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:underline">View in Audit Ledger →</button>
+                     </div>
+                     <div className="h-4 bg-slate-200/50 rounded-full overflow-hidden p-1 border border-white">
+                        <div 
+                          className={`h-full rounded-full transition-all duration-[1500ms] ${lastResult.decision === 'Loan Approved' ? 'bg-emerald-500 shadow-lg shadow-emerald-200' : 'bg-rose-500 shadow-lg shadow-rose-200'}`} 
+                          style={{ width: `${(lastResult.confidence * 100).toFixed(0)}%` }}
+                        ></div>
+                     </div>
+                   </div>
+                 </div>
+               )}
             </div>
           </div>
-        </div>
-        </div>
+        )}
+
+        {/* --- Audit Tab --- */}
+        {activeTab === 'audit' && (
+          <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
+            <div className="bg-white rounded-[56px] shadow-2xl shadow-slate-200/40 border border-slate-100 overflow-hidden">
+              <div className="p-12 border-b border-slate-50 flex justify-between items-end bg-slate-50/30">
+                  <div>
+                    <h2 className="text-3xl font-black text-slate-900 tracking-tight">Audit Trail Ledger</h2>
+                    <p className="text-slate-400 text-xs font-bold uppercase tracking-[0.2em] mt-1">Immutable Execution Evidence</p>
+                  </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50/50">
+                      <th className="px-12 py-8 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Execution Identity</th>
+                      <th className="px-8 py-8 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">AI Verdict</th>
+                      <th className="px-8 py-8 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Integrity Hash</th>
+                      <th className="px-8 py-8 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
+                      <th className="px-12 py-8 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Transparency Control</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {records.map((rec) => (
+                      <tr key={rec.decision_id} className="hover:bg-slate-50/50 transition-colors group">
+                        <td className="px-12 py-8">
+                           <div className="flex flex-col gap-1">
+                             <span className="font-mono text-xs font-black text-indigo-600">{rec.decision_id}</span>
+                             <span className="text-[10px] text-slate-400 font-bold uppercase">{new Date(rec.timestamp).toLocaleDateString()}</span>
+                           </div>
+                        </td>
+                        <td className="px-8 py-8">
+                           <span className={`text-sm font-black ${rec.decision === 'Loan Approved' ? 'text-emerald-600' : 'text-rose-600'}`}>{rec.decision}</span>
+                        </td>
+                        <td className="px-8 py-8">
+                           <div className="flex items-center gap-3">
+                              <div className="w-20 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                 <div className="h-full bg-indigo-500" style={{width: `${rec.confidence * 100}%`}}></div>
+                              </div>
+                              <span className="font-mono text-[9px] text-slate-400 uppercase">{rec.execution_hash.substring(0,8)}...</span>
+                           </div>
+                        </td>
+                        <td className="px-8 py-8">{getStatusBadge(rec.status)}</td>
+                        <td className="px-12 py-8 text-right space-x-3">
+                            <button onClick={() => verifyRecord(rec.decision_id)} disabled={verifying === rec.decision_id} 
+                                    className="bg-white border border-slate-200 hover:border-indigo-600 text-indigo-600 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all shadow-sm hover:shadow-indigo-100 italic">
+                              {verifying === rec.decision_id ? 'Verifying...' : 'Validate Ledger'}
+                            </button>
+                            <button onClick={() => openTamperModal(rec)} className="bg-slate-50 hover:bg-rose-50 text-slate-300 hover:text-rose-600 p-3 rounded-2xl transition-all"><Bug className="w-5 h-5" /></button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
-      {/* Interactive Tamper Modal */}
+      {/* Modal & Toast remain unchanged logic-wise */}
       {tamperingRecord && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="bg-rose-600 p-6 text-white flex justify-between items-center">
-              <div className="flex items-center gap-3">
-                <Bug className="w-6 h-6" />
-                <h3 className="text-xl font-black uppercase tracking-tight">Manual Tamper Proof</h3>
-              </div>
-              <button onClick={() => setTamperingRecord(null)} className="hover:bg-white/20 p-1 rounded-full transition-colors">
-                <X className="w-6 h-6" />
-              </button>
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[500] flex items-center justify-center p-6 animate-in fade-in duration-300">
+          <div className="bg-white rounded-[56px] shadow-2xl w-full max-w-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="bg-rose-600 p-10 text-white flex justify-between items-center">
+              <div className="flex items-center gap-4"><Bug className="w-8 h-8" /><h3 className="text-2xl font-black uppercase tracking-tight">System Breach Simulation</h3></div>
+              <button onClick={() => setTamperingRecord(null)} className="hover:bg-white/20 p-2 rounded-full"><X className="w-8 h-8" /></button>
             </div>
-            
-            <div className="p-8 space-y-6">
-              <p className="text-slate-500 text-sm font-medium leading-relaxed">
-                You are about to modify the stored data for decision <span className="font-mono text-indigo-600 font-bold">{tamperingRecord.decision_id}</span>. 
-                This simulates an unauthorized database breach.
-              </p>
-              
-              <div className="space-y-4">
-                <div>
-                  <label className={labelClass}>Tampered Decision</label>
-                  <select 
-                    value={tamperForm.decision} 
-                    onChange={(e) => setTamperForm({ ...tamperForm, decision: e.target.value })}
-                    className={fieldClass}
-                  >
-                    <option value="Loan Approved">Loan Approved</option>
-                    <option value="Loan Rejected">Loan Rejected</option>
-                  </select>
-                </div>
-                
-                <div>
-                  <label className={labelClass}>Tampered Confidence (0.0 - 1.0)</label>
-                  <input 
-                    type="number" 
-                    step="0.01" 
-                    min="0" 
-                    max="1" 
-                    value={tamperForm.confidence} 
-                    onChange={(e) => setTamperForm({ ...tamperForm, confidence: parseFloat(e.target.value) })}
-                    className={fieldClass}
-                  />
-                </div>
+            <div className="p-12 space-y-10">
+              <div className="grid grid-cols-2 gap-8">
+                <div className="col-span-2"><label className={labelClass}>Decision</label><select value={tamperForm.decision} onChange={e=>setTamperForm({...tamperForm, decision:e.target.value})} className={fieldClass}><option value="Loan Approved">Loan Approved</option><option value="Loan Rejected">Loan Rejected</option></select></div>
+                {['confidence', 'income', 'loan_amount', 'existing_debt'].map(f=>(<div key={f}><label className={labelClass}>{f}</label><input type="number" step="0.01" value={tamperForm[f]} onChange={e=>setTamperForm({...tamperForm, [f]:f==='loan_term'?parseInt(e.target.value):parseFloat(e.target.value)})} className={fieldClass}/></div>))}
               </div>
-              
-              <div className="pt-2">
-                <button
-                  onClick={() => handleTamper()}
-                  className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black py-4 rounded-2xl transition-all shadow-lg shadow-rose-100 flex items-center justify-center gap-2 uppercase tracking-widest text-sm"
-                >
-                  Confirm Tamper Attack
-                </button>
-                <p className="text-[10px] text-center text-slate-400 font-medium mt-4">
-                  Note: The original cryptographic hash anchored on the blockchain will NOT be updated.
-                </p>
-              </div>
+              <button onClick={handleTamper} className="w-full bg-rose-600 hover:bg-rose-700 text-white font-black py-6 rounded-[32px] shadow-2xl shadow-rose-200 uppercase tracking-widest">Execute Manual Tamper</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Modern Notification Toast */}
       {verifyResult && (
-        <div className={`fixed bottom-8 right-8 p-6 rounded-3xl shadow-2xl border-2 max-w-sm animate-in fade-in slide-in-from-right-8 duration-500 z-[100] ${
-            verifyResult.result 
-              ? 'bg-white border-emerald-500 shadow-emerald-200' 
-              : 'bg-white border-rose-500 shadow-rose-200'
-          }`}>
-          <div className="flex items-start gap-4">
-            <div className={`p-2 rounded-2xl ${verifyResult.result ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
-                {verifyResult.result ? <ShieldCheck className="w-8 h-8" /> : <ShieldAlert className="w-8 h-8" />}
-            </div>
-            <div>
-              <h3 className={`font-black uppercase tracking-wider text-sm ${verifyResult.result ? 'text-emerald-700' : 'text-rose-700'}`}>
-                {verifyResult.result ? 'Verification Success' : 'Tampering Detected'}
-              </h3>
-              <p className="text-xs text-slate-500 font-bold mt-1 mb-4 leading-relaxed">{verifyResult.message}</p>
-              
-              <div className="space-y-2">
-                  <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
-                      <p className="text-[8px] font-black uppercase text-slate-400 mb-1 tracking-tighter">Blockchain Merkle Root</p>
-                      <p className="font-mono text-[9px] text-slate-500 break-all">{verifyResult.merkle_root || 'Awaiting confirmation...'}</p>
-                  </div>
-                  <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
-                      <p className="text-[8px] font-black uppercase text-slate-400 mb-1 tracking-tighter">Recomputed Execution Hash</p>
-                      <p className="font-mono text-[9px] text-slate-500 break-all">{verifyResult.recomputed_hash}</p>
-                  </div>
+        <div className={`fixed bottom-10 right-10 p-10 rounded-[48px] shadow-2xl border-2 z-[600] animate-in slide-in-from-right-10 duration-700 ${verifyResult.result ? 'bg-white border-emerald-500' : 'bg-white border-rose-500'}`}>
+           <div className="flex gap-6">
+              <div className={`p-4 rounded-3xl ${verifyResult.result ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>{verifyResult.result ? <ShieldCheck className="w-10 h-10"/> : <ShieldAlert className="w-10 h-10"/>}</div>
+              <div>
+                <h4 className="font-black uppercase tracking-widest text-lg mb-2">{verifyResult.result ? 'Ledger Verified' : 'Breach Detected'}</h4>
+                <p className="max-w-xs text-xs text-slate-500 font-bold mb-6">{verifyResult.message}</p>
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 font-mono text-[9px] text-slate-400 break-all">{verifyResult.recomputed_hash}</div>
               </div>
-            </div>
-          </div>
+           </div>
         </div>
       )}
     </div>

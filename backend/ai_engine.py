@@ -60,7 +60,7 @@ def _predict(input_data: Dict[str, Any]) -> Tuple[str, float]:
     pred_class = int(np.argmax(proba))
     confidence = float(proba[pred_class])
     decision = "Loan Approved" if pred_class == 1 else "Loan Rejected"
-    return decision, round(confidence, 4)
+    return str(decision), float(round(float(proba[pred_class]), 4))
 
 
 def check_behavioral_consistency(input_data: Dict[str, Any]) -> bool:

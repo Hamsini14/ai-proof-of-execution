@@ -31,7 +31,15 @@ class DecisionResponse(BaseModel):
 class AuditRecord(BaseModel):
     decision_id: str
     decision: str
+    confidence: float
+    credit_score: Optional[int] = None
+    income: Optional[float] = None
+    loan_amount: Optional[float] = None
+    existing_debt: Optional[float] = None
+    employment_status: Optional[str] = None
+    loan_term: Optional[int] = None
     model_version: str
+    input_hash: str
     execution_hash: str
     merkle_root: Optional[str] = None
     blockchain_tx_id: str
@@ -43,3 +51,8 @@ class AuditRecord(BaseModel):
 class TamperRequest(BaseModel):
     decision: Optional[str] = None
     confidence: Optional[float] = None
+    income: Optional[float] = None
+    loan_amount: Optional[float] = None
+    existing_debt: Optional[float] = None
+    employment_status: Optional[str] = None
+    loan_term: Optional[int] = None
